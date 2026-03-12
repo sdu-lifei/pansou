@@ -3,8 +3,7 @@ import time
 import asyncio
 import xml.etree.ElementTree as ET
 from typing import Optional
-from fastapi import APIRouter, Request, BackgroundTasks, Query
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Request, BackgroundTasks, Query, Response
 from pansou_py.core.config import settings
 from pansou_py.core.cache import cache_service
 from pansou_py.core.search import search_service
@@ -98,7 +97,7 @@ async def _do_search_and_cache(openid: str, keyword: str):
 # Routes
 # ──────────────────────────────────────────────────────────────────────────────
 
-@router.get("/wechat", response_class=PlainTextResponse)
+@router.get("/wechat")
 async def wechat_verify(
     signature: str = Query(...),
     timestamp: str = Query(...),
@@ -107,17 +106,17 @@ async def wechat_verify(
 ):
     """WeChat server URL verification."""
     if not settings.WECHAT_TOKEN:
-        return PlainTextResponse("WeChat not configured", status_code=500)
+        return Response(content="WeChat not configured", status_code=500, media_type="text/plain")
     if _verify_signature(signature, timestamp, nonce):
-        return echostr
-    return PlainTextResponse("Invalid signature", status_code=403)
+        return Response(content=echostr, media_type="text/plain")
+    return Response(content="Invalid signature", status_code=403, media_type="text/plain")
 
 
-@router.post("/wechat", response_class=PlainTextResponse)
+@router.post("/wechat")
 async def wechat_message(request: Request, background_tasks: BackgroundTasks):
     """Handle incoming WeChat messages."""
     if not settings.WECHAT_TOKEN:
-        return ""
+        return Response(content="")
 
     body = await request.body()
 
@@ -128,7 +127,7 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
         params.get("timestamp", ""),
         params.get("nonce", ""),
     ):
-        return ""
+        return Response(content="", status_code=403)
 
     msg = _parse_xml(body)
     msg_type = msg.get("MsgType", "")
@@ -137,7 +136,7 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
 
     if msg_type != "text":
         reply = "📢 请发送文字消息搜索，例如：水浒传"
-        return _build_text_reply(openid, gh_id, reply)
+        return Response(content=_build_text_reply(openid, gh_id, reply), media_type="application/xml")
 
     content = msg.get("Content", "").strip()
 
@@ -145,12 +144,12 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
     if content in ["结果", "查询", "result", "r", "查"]:
         cached = cache_service.get(f"wx_{openid}")
         if not cached:
-            reply = "⚠️ 暂无搜索结果，请先发送资源名称"
+            reply = "⚠️ 暂无搜索结果，请先被发送资源名称"
         elif cached.get("data") is None:
             reply = f"⚠️ 搜索「{cached.get('keyword','')}」时出错，请重试"
         else:
             reply = _format_results(cached["data"], cached.get("keyword", ""))
-        return _build_text_reply(openid, gh_id, reply)
+        return Response(content=_build_text_reply(openid, gh_id, reply), media_type="application/xml")
 
     # ── Command: 帮助 ─────────────────────────────────────────────────────────
     if content in ["帮助", "help", "?"]:
@@ -162,7 +161,7 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
             "3️⃣ 即可看到搜索结果\n\n"
             "支持：百度网盘 夸克 阿里云盘 UC 迅雷等"
         )
-        return _build_text_reply(openid, gh_id, reply)
+        return Response(content=_build_text_reply(openid, gh_id, reply), media_type="application/xml")
 
     # ── Search ────────────────────────────────────────────────────────────────
     keyword = content
@@ -172,7 +171,7 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
         existing = cache_service.get(f"wx_{openid}")
         if existing and existing.get("data"):
             reply = _format_results(existing["data"], keyword)
-            return _build_text_reply(openid, gh_id, reply)
+            return Response(content=_build_text_reply(openid, gh_id, reply), media_type="application/xml")
 
     # Start background search; remember keyword for this user
     cache_service.set(f"wx_{openid}_kw", keyword, ttl=1800)
@@ -183,4 +182,4 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
         f"约 30 秒后请发送：结果\n\n"
         f'💡 发送"帮助"查看使用说明'
     )
-    return _build_text_reply(openid, gh_id, reply)
+    return Response(content=_build_text_reply(openid, gh_id, reply), media_type="application/xml")
