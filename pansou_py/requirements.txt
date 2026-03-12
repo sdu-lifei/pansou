@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+httpx
+PyJWT
+diskcache
+async-lru
