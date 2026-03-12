@@ -6,3 +6,6 @@ httpx
 PyJWT
 diskcache
 async-lru
+beautifulsoup4
+lxml
+aiohttp
