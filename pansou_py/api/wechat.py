@@ -115,30 +115,50 @@ async def wechat_verify(
 @router.post("/wechat")
 async def wechat_message(request: Request, background_tasks: BackgroundTasks):
     """Handle incoming WeChat messages."""
+    print("\n" + "="*50)
+    print("▶️ [WeChat] Received POST request")
+    
     if not settings.WECHAT_TOKEN:
+        print("❌ [WeChat] Error: WECHAT_TOKEN is not configured!")
         return Response(content="")
 
     body = await request.body()
+    print(f"📦 [WeChat] Raw Body:\n{body.decode('utf-8', errors='ignore')}")
 
     # Verify signature
     params = dict(request.query_params)
+    print(f"🔑 [WeChat] Query Params: {params}")
+    
     if not _verify_signature(
         params.get("signature", ""),
         params.get("timestamp", ""),
         params.get("nonce", ""),
     ):
+        print("❌ [WeChat] Error: Signature verification failed!")
         return Response(content="", status_code=403)
 
-    msg = _parse_xml(body)
+    print("✅ [WeChat] Signature verified successfully.")
+    
+    try:
+        msg = _parse_xml(body)
+        print(f"📄 [WeChat] Parsed XML: {msg}")
+    except Exception as e:
+        print(f"❌ [WeChat] Error parsing XML: {e}")
+        return Response(content="")
+
     msg_type = msg.get("MsgType", "")
     openid = msg.get("FromUserName", "")
     gh_id = msg.get("ToUserName", "")
 
     if msg_type != "text":
+        print(f"⚠️ [WeChat] Non-text message type received: {msg_type}")
         reply = "📢 请发送文字消息搜索，例如：水浒传"
-        return Response(content=_build_text_reply(openid, gh_id, reply), media_type="application/xml")
+        resp_xml = _build_text_reply(openid, gh_id, reply)
+        print(f"📤 [WeChat] Replying XML:\n{resp_xml}")
+        return Response(content=resp_xml, media_type="application/xml")
 
     content = msg.get("Content", "").strip()
+    print(f"💬 [WeChat] User '{openid}' sent text: '{content}'")
 
     # ── Command: 结果 / 查询 ──────────────────────────────────────────────────
     if content in ["结果", "查询", "result", "r", "查"]:
