@@ -214,17 +214,34 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
                 resp_xml = _build_text_reply(openid, gh_id, reply)
         
         if not resp_xml:
-            # Start background search; remember keyword for this user
+            # Try synchronous search with a timeout (e.g., 4s) to fit WeChat's 5s window
+            print(f"🔎 [WeChat] Attempting sync search for '{keyword}'...")
             cache_service.set(f"wx_{openid}_kw", keyword, ttl=1800)
-            background_tasks.add_task(_do_search_and_cache, openid, keyword)
-        
-            reply = (
-                f"⏳ 正在努力搜索「{keyword}」...\n\n"
-                f"因为去好几个频道抓取需要一点时间，\n"
-                f"👉 请在【约 20-30 秒后】回复：结果\n\n"
-                f"即可查看搜索内容！"
-            )
-            resp_xml = _build_text_reply(openid, gh_id, reply)
+            
+            try:
+                # Use asyncio.wait_for to limit search time
+                results_data = await asyncio.wait_for(search_service.search(keyword=keyword), timeout=4.0)
+                print(f"✅ [WeChat] Sync search finished in time. Results: {results_data.get('total', 0)}")
+                
+                # Cache and format reply
+                cache_service.set(f"wx_{openid}", {"keyword": keyword, "data": results_data}, ttl=1800)
+                reply = _format_results(results_data, keyword)
+                resp_xml = _build_text_reply(openid, gh_id, reply)
+            except asyncio.TimeoutError:
+                print(f"⏳ [WeChat] Sync search timed out (>4s). Falling back to background task.")
+                # Search too slow, fall back to background + "results" command
+                background_tasks.add_task(_do_search_and_cache, openid, keyword)
+                reply = (
+                    f"⏳ 正在努力搜索「{keyword}」...\n\n"
+                    f"因为去好几个频道抓取需要一点时间，\n"
+                    f"👉 请在【约 20-30 秒后】回复：结果\n\n"
+                    f"即可查看搜索内容！"
+                )
+                resp_xml = _build_text_reply(openid, gh_id, reply)
+            except Exception as e:
+                print(f"❌ [WeChat] Sync search failed: {e}")
+                reply = f"⚠️ 搜索「{keyword}」时出错了，请稍后再试。"
+                resp_xml = _build_text_reply(openid, gh_id, reply)
     
     print(f"📤 [WeChat] Replying XML:\n{resp_xml}")
     return Response(content=resp_xml, media_type="application/xml")
