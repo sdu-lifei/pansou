@@ -70,18 +70,41 @@ class SearchService:
         all_results = self._merge_results(tg_results, plugin_results)
 
         merged_by_type: Dict = {}
+        # Use a dict to track seen URLs per cloud type: {type: {url: item_dict}}
+        seen_urls: Dict[str, Dict[str, Dict]] = {}
+
         for r in all_results:
             for link in r.links:
                 if cloud_types and link.type not in cloud_types:
                     continue
-                merged_by_type.setdefault(link.type, []).append({
+                
+                type_dict = seen_urls.setdefault(link.type, {})
+                existing = type_dict.get(link.url)
+                
+                new_item = {
                     "url": link.url,
                     "password": link.password,
                     "note": r.title,
                     "datetime": r.datetime,
                     "source": f"tg:{r.channel}",
                     "images": r.images
-                })
+                }
+
+                if existing:
+                    # Deduplicate: prefer one with password or more recent
+                    # If existing has no password but new one has, replace
+                    if not existing.get("password") and new_item.get("password"):
+                        type_dict[link.url] = new_item
+                    # Otherwise keep the more recent one if both have or both lack password
+                    elif (bool(existing.get("password")) == bool(new_item.get("password"))) and \
+                         new_item.get("datetime", "") > existing.get("datetime", ""):
+                        type_dict[link.url] = new_item
+                else:
+                    type_dict[link.url] = new_item
+
+        # Convert back to list format for response
+        for c_type, url_map in seen_urls.items():
+            merged_by_type[c_type] = list(url_map.values())
 
         response = {
             "total": len(all_results),
