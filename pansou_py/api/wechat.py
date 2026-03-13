@@ -7,6 +7,10 @@ from fastapi import APIRouter, Request, BackgroundTasks, Query, Response
 from pansou_py.core.config import settings
 from pansou_py.core.cache import cache_service
 from pansou_py.core.search import search_service
+from pansou_py.utils.validator import link_validator
+
+# Configure validator with proxy if available
+link_validator.proxy = settings.PROXY
 
 router = APIRouter()
 
@@ -72,7 +76,7 @@ def _format_results(results_data: dict, keyword: str) -> str:
             lines.append("")
 
     if total > 10:
-        lines.append(f'... 还有 {total - 10} 条，发"更多"查看')
+        lines.append(f"注：只显示验证有效的最近 10 条结果")
 
     lines.append("💡 直接发资源名搜索新内容")
     return "\n".join(lines)
@@ -88,8 +92,36 @@ async def _do_search_and_cache(openid: str, keyword: str):
     try:
         startTime = time.time()
         result = await search_service.search(keyword=keyword)
+        
+        # Validating top 15 links (concurrently) before caching
+        if result.get("merged_by_type"):
+            all_links = []
+            for t_links in result["merged_by_type"].values():
+                all_links.extend(t_links)
+            
+            # Sort by date
+            all_links.sort(key=lambda x: x.get("datetime", ""), reverse=True)
+            
+            top_to_validate = all_links[:15]
+            print(f"🕵️ [WeChat BG] Validating top {len(top_to_validate)} links...")
+            valid_ones = await link_validator.filter_links(top_to_validate)
+            print(f"✅ [WeChat BG] Validation done. {len(valid_ones)}/{len(top_to_validate)} valid.")
+            
+            # Update results data to only include valid ones in search response
+            # Note: For simplicity, we just store the validated flat list in display cache
+            # But the search service usually returns 'merged_by_type'. 
+            # Let's just update the merged_by_type items.
+            validated_set = {l['url'] for l in valid_ones}
+            new_merged = {}
+            for t_key, t_links in result["merged_by_type"].items():
+                new_l = [l for l in t_links if l['url'] in validated_set]
+                if new_l:
+                    new_merged[t_key] = new_l
+            result["merged_by_type"] = new_merged
+            result["total"] = sum(len(l) for l in new_merged.values())
+
         duration = time.time() - startTime
-        print(f"✅ [WeChat BG] Search completed in {duration:.2f}s, total results: {result.get('total', 0)}")
+        print(f"✅ [WeChat BG] Search + Validation completed in {duration:.2f}s, total valid: {result.get('total', 0)}")
         
         # Store under openid so user can retrieve with "结果"
         cache_service.set(f"wx_{openid}", {"keyword": keyword, "data": result}, ttl=1800)
@@ -221,7 +253,28 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
             try:
                 # Use asyncio.wait_for to limit search time
                 results_data = await asyncio.wait_for(search_service.search(keyword=keyword), timeout=4.0)
-                print(f"✅ [WeChat] Sync search finished in time. Results: {results_data.get('total', 0)}")
+                
+                # Validation (Sync mode: limit to top 8 to save time)
+                if results_data.get("merged_by_type"):
+                    all_links = []
+                    for t_links in results_data["merged_by_type"].values():
+                        all_links.extend(t_links)
+                    all_links.sort(key=lambda x: x.get("datetime", ""), reverse=True)
+                    
+                    top_to_validate = all_links[:8]
+                    print(f"🕵️ [WeChat] Validating top {len(top_to_validate)} links...")
+                    valid_ones = await link_validator.filter_links(top_to_validate)
+                    
+                    validated_set = {l['url'] for l in valid_ones}
+                    new_merged = {}
+                    for t_key, t_links in results_data["merged_by_type"].items():
+                        new_l = [l for l in t_links if l['url'] in validated_set]
+                        if new_l:
+                            new_merged[t_key] = new_l
+                    results_data["merged_by_type"] = new_merged
+                    results_data["total"] = sum(len(l) for l in new_merged.values())
+
+                print(f"✅ [WeChat] Sync search + validation finished. Valid: {results_data.get('total', 0)}")
                 
                 # Cache and format reply
                 cache_service.set(f"wx_{openid}", {"keyword": keyword, "data": results_data}, ttl=1800)
