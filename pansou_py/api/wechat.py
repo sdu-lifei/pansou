@@ -84,12 +84,20 @@ def _format_results(results_data: dict, keyword: str) -> str:
 
 async def _do_search_and_cache(openid: str, keyword: str):
     """Perform search in background and store result keyed by openid."""
+    print(f"🚀 [WeChat BG] Starting background search for '{keyword}' ({openid})")
     try:
+        startTime = time.time()
         result = await search_service.search(keyword=keyword)
+        duration = time.time() - startTime
+        print(f"✅ [WeChat BG] Search completed in {duration:.2f}s, total results: {result.get('total', 0)}")
+        
         # Store under openid so user can retrieve with "结果"
         cache_service.set(f"wx_{openid}", {"keyword": keyword, "data": result}, ttl=1800)
+        print(f"💾 [WeChat BG] Results cached for '{openid}'")
     except Exception as e:
-        print(f"[WeChat BG Search] Error for {openid}/{keyword}: {e}")
+        import traceback
+        print(f"❌ [WeChat BG] Search error for {openid}/{keyword}: {e}")
+        traceback.print_exc()
         cache_service.set(f"wx_{openid}", {"keyword": keyword, "data": None}, ttl=300)
 
 
@@ -160,19 +168,30 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
     content = msg.get("Content", "").strip()
     print(f"💬 [WeChat] User '{openid}' sent text: '{content}'")
 
+    resp_xml = ""
+
     # ── Command: 结果 / 查询 ──────────────────────────────────────────────────
     if content in ["结果", "查询", "result", "r", "查"]:
         cached = cache_service.get(f"wx_{openid}")
         if not cached:
-            reply = "⚠️ 暂无搜索结果，请先被发送资源名称"
+            # Check if there is even a pending keyword
+            pending_kw = cache_service.get(f"wx_{openid}_kw")
+            if pending_kw:
+                reply = (
+                    f"⌛ 正在为您努力抓取「{pending_kw}」中...\n\n"
+                    f"抓取 Telegram 频道资源通常需要约 20-40 秒的时间。\n"
+                    f"👉 请再稍等片刻后回复：结果"
+                )
+            else:
+                reply = "⚠️ 您还没有发送过查询关键词哦。\n\n💡 请直接发送您想找的资源名称，例如：水浒传"
         elif cached.get("data") is None:
-            reply = f"⚠️ 搜索「{cached.get('keyword','')}」时出错，请重试"
+            reply = f"⚠️ 搜索「{cached.get('keyword','')}」时出错，请换个词重试"
         else:
             reply = _format_results(cached["data"], cached.get("keyword", ""))
-        return Response(content=_build_text_reply(openid, gh_id, reply), media_type="application/xml")
+        resp_xml = _build_text_reply(openid, gh_id, reply)
 
     # ── Command: 帮助 ─────────────────────────────────────────────────────────
-    if content in ["帮助", "help", "?"]:
+    elif content in ["帮助", "help", "?"]:
         reply = (
             "🔍 PanSou 网盘资源搜索\n\n"
             "使用方法：\n"
@@ -181,25 +200,31 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
             "3️⃣ 即可看到搜索结果\n\n"
             "支持：百度网盘 夸克 阿里云盘 UC 迅雷等"
         )
-        return Response(content=_build_text_reply(openid, gh_id, reply), media_type="application/xml")
+        resp_xml = _build_text_reply(openid, gh_id, reply)
 
     # ── Search ────────────────────────────────────────────────────────────────
-    keyword = content
-    # Check if already cached
-    cached = cache_service.get(f"wx_{openid}_kw")
-    if cached == keyword:
-        existing = cache_service.get(f"wx_{openid}")
-        if existing and existing.get("data"):
-            reply = _format_results(existing["data"], keyword)
-            return Response(content=_build_text_reply(openid, gh_id, reply), media_type="application/xml")
-
-    # Start background search; remember keyword for this user
-    cache_service.set(f"wx_{openid}_kw", keyword, ttl=1800)
-    background_tasks.add_task(_do_search_and_cache, openid, keyword)
-
-    reply = (
-        f"⏳ 正在搜索「{keyword}」\n"
-        f"约 30 秒后请发送：结果\n\n"
-        f'💡 发送"帮助"查看使用说明'
-    )
-    return Response(content=_build_text_reply(openid, gh_id, reply), media_type="application/xml")
+    else:
+        keyword = content
+        # Check if already cached
+        cached_kw = cache_service.get(f"wx_{openid}_kw")
+        if cached_kw == keyword:
+            existing = cache_service.get(f"wx_{openid}")
+            if existing and existing.get("data"):
+                reply = _format_results(existing["data"], keyword)
+                resp_xml = _build_text_reply(openid, gh_id, reply)
+        
+        if not resp_xml:
+            # Start background search; remember keyword for this user
+            cache_service.set(f"wx_{openid}_kw", keyword, ttl=1800)
+            background_tasks.add_task(_do_search_and_cache, openid, keyword)
+        
+            reply = (
+                f"⏳ 正在努力搜索「{keyword}」...\n\n"
+                f"因为去好几个频道抓取需要一点时间，\n"
+                f"👉 请在【约 20-30 秒后】回复：结果\n\n"
+                f"即可查看搜索内容！"
+            )
+            resp_xml = _build_text_reply(openid, gh_id, reply)
+    
+    print(f"📤 [WeChat] Replying XML:\n{resp_xml}")
+    return Response(content=resp_xml, media_type="application/xml")

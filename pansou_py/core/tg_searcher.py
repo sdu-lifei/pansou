@@ -234,15 +234,17 @@ class TelegramSearcher:
         seen_ids: set = set()
         next_page_param = ""
 
-        for _ in range(self.MAX_PAGES):
+        for pg in range(self.MAX_PAGES):
             url = self.build_search_url(channel, keyword, next_page_param)
+            print(f"🌍 [TG Fetch] Page {pg+1} for '{channel}': {url}")
             try:
                 html = await self.fetch_html(url)
             except Exception as e:
-                print(f"[Error fetching {channel} page] {e}")
+                print(f"❌ [TG Fetch] Error fetching {channel} page {pg+1}: {e}")
                 break
 
             results, next_page_param = self.parse_search_results(html, channel, keyword)
+            print(f"📄 [TG Fetch] Page {pg+1} returned {len(results)} raw items")
 
             new_results = [r for r in results if r.unique_id not in seen_ids]
             for r in new_results:
@@ -250,6 +252,7 @@ class TelegramSearcher:
             all_results.extend(new_results)
 
             if not next_page_param or not new_results:
+                print(f"🏁 [TG Fetch] No more results for '{channel}' at page {pg+1}")
                 break  # No more pages
 
         return all_results

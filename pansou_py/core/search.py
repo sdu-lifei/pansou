@@ -49,16 +49,23 @@ class SearchService:
         channels_to_search = channels if channels else settings.default_channels
 
         if src in ["all", "tg"]:
+            print(f"📡 [Search] Searching Telegram channels: {channels_to_search}")
             tg_list = await asyncio.gather(
                 *[telegram_searcher.search(ch, keyword) for ch in channels_to_search],
                 return_exceptions=True
             )
-            for res in tg_list:
+            for i, res in enumerate(tg_list):
+                ch_name = channels_to_search[i]
                 if isinstance(res, list):
+                    print(f"📦 [Search] Channel '{ch_name}' returned {len(res)} results")
                     tg_results.extend(res)
+                else:
+                    print(f"❌ [Search] Channel '{ch_name}' failed: {res}")
 
         if src in ["all", "plugin"]:
+            print(f"🔌 [Search] Searching plugins for '{keyword}'")
             plugin_results = await self.search_plugins(keyword, plugins)
+            print(f"📦 [Search] Plugins returned {len(plugin_results)} results")
 
         all_results = self._merge_results(tg_results, plugin_results)
 
