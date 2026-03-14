@@ -21,7 +21,7 @@ class LinkValidator:
             "Referer": "https://pan.quark.cn/",
         }
 
-    async def _check_quark(self, session: aiohttp.ClientSession, url: str) -> bool:
+    async def _check_quark(self, session: aiohttp.ClientSession, url: str, timeout: int = 6) -> bool:
         """Special check for Quark using their internal API."""
         try:
             # Extract pwd_id from URL: https://pan.quark.cn/s/a500126895e7
@@ -37,7 +37,7 @@ class LinkValidator:
                 "support_visit_limit_private_share": True
             }
             
-            async with session.post(api_url, json=payload, headers=self.headers, proxy=self.proxy, timeout=6) as resp:
+            async with session.post(api_url, json=payload, headers=self.headers, proxy=self.proxy, timeout=timeout) as resp:
                 if resp.status != 200:
                     # 404 is common for dead links in this API
                     return False
@@ -50,13 +50,13 @@ class LinkValidator:
         except Exception:
             return False
 
-    async def check_link(self, url: str) -> bool:
+    async def check_link(self, url: str, timeout: int = 6) -> bool:
         """Return True if link is likely valid, False if dead."""
         try:
             # Detect platform
             if "pan.quark.cn" in url:
                 async with aiohttp.ClientSession() as session:
-                    return await self._check_quark(session, url)
+                    return await self._check_quark(session, url, timeout=timeout)
             
             # For Baidu and Aliyun, use HTML pattern matching
             platform = "common"
@@ -72,7 +72,7 @@ class LinkValidator:
             headers["Referer"] = referer
 
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, proxy=self.proxy, timeout=6) as response:
+                async with session.get(url, headers=headers, proxy=self.proxy, timeout=timeout) as response:
                     if response.status == 404:
                         return False
                     
@@ -91,7 +91,7 @@ class LinkValidator:
         except Exception:
             return False
 
-    async def filter_links(self, links: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def filter_links(self, links: List[Dict[str, Any]], timeout: int = 6) -> List[Dict[str, Any]]:
         """Validate a list of links concurrently and return only valid ones."""
         if not links:
             return []
@@ -100,7 +100,7 @@ class LinkValidator:
         
         async def sem_check(link):
             async with semaphore:
-                return await self.check_link(link['url'])
+                return await self.check_link(link['url'], timeout=timeout)
 
         tasks = [sem_check(l) for l in links]
         results = await asyncio.gather(*tasks, return_exceptions=True)

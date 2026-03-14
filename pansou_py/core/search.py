@@ -20,10 +20,11 @@ class SearchService:
         merged.sort(key=lambda x: x.datetime, reverse=True)
         return merged
 
-    async def search_plugins(self, keyword: str, plugins_filter: Optional[List[str]]) -> List[SearchResult]:
+    async def search_plugins(self, keyword: str, plugins_filter: Optional[List[str]], max_pages: int = 5) -> List[SearchResult]:
         plugins = self.plugin_manager.get_plugins()
         if plugins_filter:
             plugins = [p for p in plugins if p.name in plugins_filter]
+        # Note: We assume plugins also support max_pages if they use it
         results_list = await asyncio.gather(*[p.search(keyword) for p in plugins], return_exceptions=True)
         return [r for res in results_list if isinstance(res, list) for r in res]
 
@@ -36,6 +37,7 @@ class SearchService:
         src: str = "all",
         plugins: Optional[List[str]] = None,
         cloud_types: Optional[List[str]] = None,
+        max_pages: int = 5
     ) -> dict:
         cache_key = f"search_{keyword}_{src}_{plugins}"
         if not force_refresh:

@@ -228,13 +228,14 @@ class TelegramSearcher:
 
     MAX_PAGES = 5  # Maximum pages to fetch per channel search
 
-    async def search(self, channel: str, keyword: str) -> List[SearchResult]:
+    async def search(self, channel: str, keyword: str, max_pages: int = 5) -> List[SearchResult]:
         keyword = _normalize_keyword(keyword)  # strip '名称:' etc. prefixes
         all_results: List[SearchResult] = []
         seen_ids: set = set()
         next_page_param = ""
 
-        for pg in range(self.MAX_PAGES):
+        # Limit depth based on max_pages
+        for pg in range(min(max_pages, 10)):
             url = self.build_search_url(channel, keyword, next_page_param)
             print(f"🌍 [TG Fetch] Page {pg+1} for '{channel}': {url}")
             try:
