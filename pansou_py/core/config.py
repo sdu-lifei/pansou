@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # Cache
     CACHE_ENABLED: bool = Field(default=True)
-    CACHE_PATH: str = Field(default="./cache")
+    CACHE_PATH: str = "/tmp/pansou_cache"
     CACHE_MAX_SIZE: int = Field(default=100)  # MB
     CACHE_TTL: int = Field(default=60)  # minutes
 
