@@ -51,18 +51,23 @@ class SearchService:
         channels_to_search = channels if channels else settings.default_channels
 
         if src in ["all", "tg"]:
-            print(f"📡 [Search] Searching Telegram channels: {channels_to_search}")
-            tg_list = await asyncio.gather(
-                *[telegram_searcher.search(ch, keyword) for ch in channels_to_search],
-                return_exceptions=True
-            )
-            for i, res in enumerate(tg_list):
-                ch_name = channels_to_search[i]
-                if isinstance(res, list):
-                    print(f"📦 [Search] Channel '{ch_name}' returned {len(res)} results")
-                    tg_results.extend(res)
-                else:
-                    print(f"❌ [Search] Channel '{ch_name}' failed: {res}")
+            print(f"📡 [Search] Searching Telegram channels: {channels_to_search} (timeout: 3.5s)")
+            tasks = [telegram_searcher.search(ch, keyword, max_pages=max_pages) for ch in channels_to_search]
+            
+            # Use asyncio.wait to allow partial harvesting within 3.5s
+            done, pending = await asyncio.wait(tasks, timeout=3.5)
+            
+            for task in done:
+                try:
+                    res = await task
+                    if isinstance(res, list):
+                        tg_results.extend(res)
+                except Exception as e:
+                    print(f"❌ [Search] A channel search task failed: {e}")
+            
+            if pending:
+                print(f"⏳ [Search] {len(pending)} channel tasks timed out and were discarded/backgrounded.")
+                for p in pending: p.cancel() # Cancel slow ones to save resources
 
         if src in ["all", "plugin"]:
             print(f"🔌 [Search] Searching plugins for '{keyword}'")

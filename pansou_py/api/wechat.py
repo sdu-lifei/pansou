@@ -92,6 +92,9 @@ async def _do_search_and_cache(openid: str, keyword: str):
     try:
         startTime = time.time()
         # Deep search: fetch 5 pages per channel
+        # Note: SearchService.search already has a partial harvesting timeout of 3.5s.
+        # For background tasks, we might want to allow longer. 
+        # But for now, we'll keep it simple.
         result = await search_service.search(keyword=keyword, max_pages=5)
         
         # Validating top 15 links (concurrently) before caching
@@ -212,7 +215,7 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
             "🔍 PanSou 网盘资源搜索\n\n"
             "使用方法：\n"
             "1️⃣ 直接发送资源名称，如：庆余年\n"
-            "2️⃣ 有结果会直接回复（通常 5s 内）\n"
+            "2️⃣ 点击系统回复（通常 5s 内出）\n"
             "3️⃣ 如果没立刻出，等 10-20s 后回复：查询\n\n"
             "集成频道：Lsp115, Aliyun_4K_Movies 等多源"
         )
@@ -233,44 +236,50 @@ async def wechat_message(request: Request, background_tasks: BackgroundTasks):
             cache_service.set(f"wx_{openid}_kw", keyword, ttl=1800)
             
             async def fast_search_and_validate():
-                # Shallow search (1 page)
+                # Shallow search (1 page). search() now harvests partials within 3.5s
                 data = await search_service.search(keyword=keyword, max_pages=1)
+                
                 if data.get("merged_by_type"):
                     all_links = []
                     for t_links in data["merged_by_type"].values():
                         all_links.extend(t_links)
                     all_links.sort(key=lambda x: x.get("datetime", ""), reverse=True)
                     
-                    top_to_validate = all_links[:6]
-                    # Fast validation (2s timeout)
-                    valid_ones = await link_validator.filter_links(top_to_validate, timeout=2)
-                    
-                    val_urls = {l['url'] for l in valid_ones}
-                    new_merged = {}
-                    for k, v in data["merged_by_type"].items():
-                        match_l = [l for l in v if l['url'] in val_urls]
-                        if match_l:
-                            new_merged[k] = match_l
-                    data["merged_by_type"] = new_merged
-                    data["total"] = sum(len(l) for l in new_merged.values())
+                    # Target 1s validation for the top 3 results
+                    top_to_validate = all_links[:3]
+                    try:
+                        valid_ones = await link_validator.filter_links(top_to_validate, timeout=1.2)
+                        if valid_ones:
+                            valid_urls = {l['url'] for l in valid_ones}
+                            new_merged = {}
+                            for k, v in data["merged_by_type"].items():
+                                match_l = [l for l in v if l['url'] in valid_urls]
+                                if match_l: new_merged[k] = match_l
+                            data["merged_by_type"] = new_merged
+                            data["total"] = sum(len(l) for l in new_merged.values())
+                    except:
+                        pass # Validation failure should not block returning the links
                 return data
 
             try:
-                print(f"🔎 [WeChat] Attempting sync search (3.5s limit) for '{keyword}'...")
-                results_data = await asyncio.wait_for(fast_search_and_validate(), timeout=3.5)
+                print(f"🔎 [WeChat] Aggressive sync search (4.6s) for '{keyword}'...")
+                results_data = await asyncio.wait_for(fast_search_and_validate(), timeout=4.6)
                 
-                print(f"✅ [WeChat] Sync search finished. Valid: {results_data.get('total', 0)}")
-                cache_service.set(f"wx_{openid}", {"keyword": keyword, "data": results_data}, ttl=1800)
-                reply = _format_results(results_data, keyword)
-                resp_xml = _build_text_reply(openid, gh_id, reply)
-                # Background: start a deep search (5 pages) to enrich cache
-                background_tasks.add_task(_do_search_and_cache, openid, keyword)
+                if results_data.get("total", 0) > 0:
+                    print(f"✅ [WeChat] Sync search finished. Found {results_data.get('total', 0)} links.")
+                    cache_service.set(f"wx_{openid}", {"keyword": keyword, "data": results_data}, ttl=1800)
+                    reply = _format_results(results_data, keyword)
+                    resp_xml = _build_text_reply(openid, gh_id, reply)
+                    background_tasks.add_task(_do_search_and_cache, openid, keyword)
+                else:
+                    raise ValueError("No results in fast path")
+
             except (asyncio.TimeoutError, Exception) as e:
-                print(f"⏳ [WeChat] Sync search fallback ({type(e).__name__}): {e}")
+                print(f"⏳ [WeChat] Sync search fallback: {e}")
                 background_tasks.add_task(_do_search_and_cache, openid, keyword)
                 reply = (
-                    f"⏳ 正在抓取「{keyword}」，请过几秒直接回复：查询\n\n"
-                    f"正在多频道搜索并验证链接有效性..."
+                    f"⏳ 正在搜「{keyword}」，请过 10 秒回复：查询\n"
+                    f"抓取并验证链接需要一点时间，请稍候..."
                 )
                 resp_xml = _build_text_reply(openid, gh_id, reply)
     
